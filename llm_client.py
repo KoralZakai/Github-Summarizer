@@ -1,47 +1,72 @@
 import os
-from openai import OpenAI
-import httpx
+from anthropic import Anthropic
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class LLMClient:
     def __init__(self):
-        self.api_key = os.getenv("NEBIUS_API_KEY")
-        self.base_url = os.getenv("NEBIUS_BASE_URL", "https://api.studio.nebius.ai/v1")
-        self.client = OpenAI(
-            api_key=self.api_key if self.api_key != "mock" else "placeholder",
-            base_url=self.base_url,
-            http_client=httpx.Client(timeout=10.0)
-        )
+        self.api_key = os.getenv("ANTHROPIC_API_KEY")
+        if self.api_key and self.api_key != "mock":
+            self.client = Anthropic(api_key=self.api_key)
 
     def summarize(self, repo_data):
         if not self.api_key or self.api_key == "mock":
-            return """
-## Project Overview (Mock Mode)
-This project appears to be a Python-based library.
-### Key Tech Stack
-* Python
-* Pytest
-### Summary
-The repository structure suggests a focused tool for HTTP requests and API interactions.
-            """
+            return "# Project Summary (Mock)\nFalling back to local analysis."
 
-        prompt = f"""
-        Repo Structure:
-        {repo_data['structure']}
+        # Build code analysis from actual files
+        code_analysis = ""
+        if repo_data.get("code_files"):
+            code_analysis = "\n\nActual Code Files Analysis:\n"
+            for file in repo_data["code_files"][:5]:
+                code_analysis += f"File: {file['path']}\n{file['content']}\n"
         
-        README Content:
-        {repo_data['readme'][:2000]}
-        
-        Summarize this GitHub repository for a developer. 
-        Use Markdown with 'Overview', 'Tech Stack', and 'Key Features' sections.
-        """
+        # Handle README - may be empty
+        # readme_text = repo_data.get("readme", "").strip()
+        readme_text = ""
+        readme_section = f"README Content:\n{readme_text[:1000]}" if readme_text else "No README file found"
+        print(readme_section)
+        prompt = f"""Analyze this GitHub repository and provide a concise summary. Use clear, plain text formatting without special characters or markdown symbols.
+
+Repository Structure:
+{repo_data.get('structure', 'No structure available')}
+
+{readme_section}
+
+{code_analysis}
+
+Answer these 4 questions clearly and concisely:
+
+1. WHO SHOULD USE THIS REPO - Describe the target audience or users (developers, data scientists, system administrators, etc.)
+
+2. WHY AND FOR WHAT PURPOSE - Explain what problems it solves and why someone would use it
+
+3. INPUT AND OUTPUT - List what the project accepts as input and what it produces/returns
+
+4. LANGUAGE AND CODE - List the programming languages used and key technologies
+
+Use simple, direct language without lists or bullet points. Write 1-2 sentences per question."""
 
         try:
-            response = self.client.chat.completions.create(
-                model="meta-llama/Meta-Llama-3.1-70B-Instruct",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=200,
-                temperature=0.3
+    
+            message = self.client.messages.create(
+                model="claude-haiku-4-5",
+                max_tokens=300,
+                temperature=0.2,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ]
             )
-            return response.choices[0].message.content
+            return f"# Project Summary\n{message.content[0].text}"
+            
         except Exception as e:
-            return f"Service unavailable: {str(e)}"
+          
+            try:
+                message = self.client.messages.create(
+                    model="claude-haiku-4-5",
+                    max_tokens=300,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                return message.content[0].text
+            except:
+                return f"Claude Analysis Failed: {str(e)}"

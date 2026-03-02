@@ -1,6 +1,7 @@
-openai
+#openai
 fastapi
 uvicorn
 requests
 python-dotenv
-#google-generativeai
+google-generativeai
+anthropic

@@ -34,7 +34,7 @@ class LLMClient:
         try:
             message = self.client.messages.create(
                 model="claude-haiku-4-5",
-                max_tokens=300,
+                max_tokens=800,
                 temperature=0.2,
                 messages=[{"role": "user", "content": prompt}]
             )
@@ -56,7 +56,7 @@ class LLMClient:
             try:
                 message = self.client.messages.create(
                     model="claude-haiku-4-5",
-                    max_tokens=300,
+                    max_tokens=800,
                     messages=[{"role": "user", "content": prompt}]
                 )
                 summary = message.content[0].text
@@ -76,35 +76,44 @@ class LLMClient:
         # Build code analysis from actual files
         code_analysis = ""
         if repo_data.get("code_files"):
-            code_analysis = "\n\nCode Files Analysis:\n"
+            code_analysis = "\n\n=== Code Files Analysis ===\n"
             for file in repo_data["code_files"][:5]:
                 code_analysis += f"\nFile: {file['path']}\n{file['content']}\n"
         
-        # Build tech stack section
+        # Build tech stack section with dependencies
         tech_section = ""
         if tech_stack:
             languages = tech_stack.get("languages", [])
             frameworks = tech_stack.get("frameworks", [])
-            if languages or frameworks:
-                tech_section = f"\n\nIdentified Tech Stack:\nLanguages: {', '.join(languages)}\nFrameworks: {', '.join(frameworks)}\n"
+            key_deps = tech_stack.get("key_deps", [])
+            
+            tech_section = "\n=== Technology Stack ===\n"
+            if languages:
+                tech_section += f"Languages: {', '.join(languages)}\n"
+            if frameworks:
+                tech_section += f"Frameworks: {', '.join(frameworks)}\n"
+            if key_deps:
+                tech_section += f"Key Dependencies: {', '.join(key_deps[:10])}\n"
         
         # Build manifest summary
         manifest_section = ""
         if manifests:
-            manifest_section = "\n\nManifest Files Summary:\n"
+            manifest_section = "\n=== Manifest Files ===\n"
             for name, content in manifests.items():
-                manifest_section += f"{name}: {content[:200]}...\n"
+                manifest_section += f"\n{name}:\n{content[:300]}\n"
         
         # Handle README - may be empty
         readme_text = repo_data.get("readme", "").strip()
-        readme_section = f"README Content:\n{readme_text}" if readme_text else "No README file found"
+        readme_section = f"=== README Content ===\n{readme_text}" if readme_text else "No README file found"
         
-        prompt = f"""Analyze this GitHub repository and provide a comprehensive summary. Use clear, plain text formatting without special characters or markdown symbols.
+        prompt = f"""You are a expert code analyst. Analyze this GitHub repository and provide a COMPREHENSIVE, DETAILED analysis.
 
-Repository Structure:
-{repo_data.get('structure', 'No structure available')}
+=== Repository Information ===
 
 {readme_section}
+
+Repository Structure (showing directory/file organization):
+{repo_data.get('structure', 'No structure available')[:1000]}
 
 {tech_section}
 
@@ -112,28 +121,32 @@ Repository Structure:
 
 {code_analysis}
 
-Answer these 4 questions clearly and concisely:
+=== Your Analysis Task ===
 
-1. WHO SHOULD USE THIS REPO - Describe the target audience or users (developers, data scientists, system administrators, etc.)
+Answer these 5 detailed questions with CLEAR, SPECIFIC, and ACTIONABLE information:
 
-2. WHY AND FOR WHAT PURPOSE - Explain what problems it solves and why someone would use it
+1. WHO SHOULD USE THIS - Specific audience breakdown (e.g., "Web developers building REST APIs", "Python data scientists", etc.). Be precise about skill level and use case.
 
-3. INPUT AND OUTPUT - List what the project accepts as input and what it produces/returns
+2. WHY AND PURPOSE - What problem does it solve? Why would someone choose this over alternatives? What specific problems does it address?
 
-4. LANGUAGE AND CODE - List the programming languages used and key technologies
+3. INPUT AND OUTPUT - What exactly does it accept as input? What does it produce/return/output? Be specific about data formats and types.
 
-Use simple, direct language without lists or bullet points. Write 2-3 sentences per question."""
+4. LANGUAGE AND TECH - What programming language(s)? What are the key dependencies, frameworks, and technologies? List any important libraries.
+
+5. KEY FEATURES AND CAPABILITIES - What can users actually do with this project? What are its main functionalities?
+
+IMPORTANT: Use complete, informative sentences. Be specific with names of frameworks, libraries, and technologies. Avoid generic descriptions."""
 
         # Estimate tokens for the prompt
-        prompt_tokens = self.estimate_tokens(prompt) + 50  # Buffer for formatting
+        prompt_tokens = self.estimate_tokens(prompt) + 100  # Buffer for formatting
         
         return prompt, prompt_tokens
 
     def _is_summary_complete(self, summary):
-        """Check if summary has all 4 required question answers"""
-        required_markers = ['WHO SHOULD USE', 'WHY AND FOR WHAT', 'INPUT AND OUTPUT', 'LANGUAGE AND CODE']
+        """Check if summary has all 5 required question answers"""
+        required_markers = ['WHO SHOULD', 'WHY AND', 'INPUT AND', 'LANGUAGE AND', 'KEY FEATURES']
         found_markers = sum(1 for marker in required_markers if marker in summary.upper())
-        return found_markers >= 3  # At least 3 out of 4
+        return found_markers >= 4  # At least 4 out of 5
 
     def _request_missing_info(self, gh_client, repo_data, initial_summary):
         """PHASE 4: Ask LLM what specific files would improve the summary"""

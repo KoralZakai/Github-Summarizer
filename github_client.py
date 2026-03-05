@@ -145,6 +145,7 @@ class GitHubClient:
         """PHASE 1: Fetch README, tree structure, and manifest files"""
         def fetch_readme():
             try:
+                # Try GitHub API first
                 res = requests.get(f"https://api.github.com/repos/{owner}/{repo}/readme", 
                                  headers=self.headers, timeout=5)
                 if res.status_code == 200:
@@ -152,6 +153,28 @@ class GitHubClient:
                     return base64.b64decode(encoded).decode("utf-8", errors="ignore")
             except Exception:
                 pass
+            
+            # Fallback 1: Try raw.githubusercontent.com with common README names
+            readme_names = ['README.md', 'README.rst', 'README.txt', 'README']
+            for readme_name in readme_names:
+                try:
+                    res = requests.get(f"https://raw.githubusercontent.com/{owner}/{repo}/main/{readme_name}", 
+                                     timeout=5)
+                    if res.status_code == 200:
+                        return res.text
+                except Exception:
+                    pass
+            
+            # Fallback 2: Try master branch
+            for readme_name in readme_names:
+                try:
+                    res = requests.get(f"https://raw.githubusercontent.com/{owner}/{repo}/master/{readme_name}", 
+                                     timeout=5)
+                    if res.status_code == 200:
+                        return res.text
+                except Exception:
+                    pass
+            
             return ""
         
         def fetch_tree():
@@ -269,7 +292,8 @@ class GitHubClient:
         tech_stack = {
             "languages": set(),
             "frameworks": set(),
-            "key_deps": []
+            "key_deps": [],
+            "dependencies": {}
         }
         
         # Infer from manifests
@@ -281,15 +305,28 @@ class GitHubClient:
                     if 'dependencies' in data:
                         deps = list(data['dependencies'].keys())[:5]
                         tech_stack["key_deps"].extend(deps)
+                        tech_stack["dependencies"] = data.get('dependencies', {})
                 except:
                     pass
             elif manifest_name == 'requirements.txt':
                 tech_stack["languages"].add("Python")
-                frameworks = ['django', 'flask', 'fastapi', 'pytest']
+                frameworks = ['django', 'flask', 'fastapi', 'pytest', 'uvicorn']
+                deps_dict = {}
                 for line in content.split('\n'):
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    # Extract package name and version
+                    pkg = line.split('==')[0].split('>=')[0].split('<=')[0].strip()
+                    if pkg:
+                        deps_dict[pkg] = line
+                        tech_stack["key_deps"].append(pkg)
+                    
                     for fw in frameworks:
                         if fw.lower() in line.lower():
                             tech_stack["frameworks"].add(fw.title())
+                
+                tech_stack["dependencies"] = deps_dict
             elif manifest_name == 'go.mod':
                 tech_stack["languages"].add("Go")
             elif manifest_name == 'pom.xml':
@@ -319,7 +356,8 @@ class GitHubClient:
         return {
             "languages": list(tech_stack["languages"]),
             "frameworks": list(tech_stack["frameworks"]),
-            "key_deps": tech_stack["key_deps"]
+            "key_deps": tech_stack["key_deps"][:10],  # Top 10 dependencies
+            "all_deps": tech_stack["dependencies"]
         }
 
     def sample_code_files(self, tree_data, entry_points, hint_files, max_tokens=300):

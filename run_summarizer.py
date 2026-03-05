@@ -52,9 +52,9 @@ def run_summary(repo_url):
         readme_size = len(readme) if readme else 0
         code_files_count = len(code_files)
         
-        print(f"  ✓ README size: {readme_size} chars")
-        print(f"  ✓ Code files sampled: {code_files_count}")
-        print(f"  ✓ Tech stack identified: {', '.join(metadata.get('tech_stack', {}).get('languages', []))}")
+        print(f"  [OK] README size: {readme_size} chars")
+        print(f"  [OK] Code files sampled: {code_files_count}")
+        print(f"  [OK] Tech stack identified: {', '.join(metadata.get('tech_stack', {}).get('languages', []))}")
         
         # Step 2: Generate summary with agentic feedback
         print("\n[Phase 2] Generating summary with Claude Haiku...")
@@ -94,18 +94,18 @@ def run_summary(repo_url):
         print(f"Estimated Cost: ${estimated_cost:.6f}")
         print(f"Timestamp: {datetime.now().isoformat()}")
         
-        print("\n✓ SUCCESS - Summary generated with intelligent optimization")
+        print("\n[SUCCESS] Summary generated with intelligent optimization")
         print("="*70 + "\n")
         
         return True
         
     except ValueError as e:
-        print(f"\n✗ ERROR: Invalid GitHub URL")
+        print(f"\n[ERROR] Invalid GitHub URL")
         print(f"  {str(e)}")
         print(f"  Expected: https://github.com/owner/repo")
         return False
     except Exception as e:
-        print(f"\n✗ ERROR: {str(e)}")
+        print(f"\n[ERROR] {str(e)}")
         print(f"\nCheck:")
         print(f"  - GitHub URL is valid and public")
         print(f"  - ANTHROPIC_API_KEY is set in .env")
@@ -143,7 +143,7 @@ if __name__ == "__main__":
     
     # Validate URL format
     if not repo_url.startswith("https://github.com/"):
-        print(f"\n✗ ERROR: Invalid URL: {repo_url}")
+        print(f"\n[ERROR] Invalid URL: {repo_url}")
         print(f"  Expected: https://github.com/owner/repo")
         print_usage()
         sys.exit(1)

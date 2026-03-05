@@ -18,14 +18,17 @@ class RepoRequest(BaseModel):
 async def summarize_repo(request: RepoRequest):
     try:
         repo_data = gh_client.get_repo_data(request.repo_url)
-        summary = llm_client.summarize(repo_data)
+        summary = llm_client.summarize(repo_data, gh_client=gh_client)
+        token_usage = llm_client.get_token_usage()
         return {
             "status": "success",
             "personal_id": "641463731438",
-            "summary": summary
+            "summary": summary,
+            "token_usage": token_usage
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

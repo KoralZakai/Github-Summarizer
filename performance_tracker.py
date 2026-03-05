@@ -1,213 +1,111 @@
-import time
+"""
+Performance tracking for GitHub repository summarization
+Tracks metrics like latency, token usage, and cost
+"""
+
 import json
+import os
 from datetime import datetime
-from typing import Dict, List, Optional
+from pathlib import Path
+
 
 class PerformanceTracker:
-    """Track and analyze LLM performance metrics for optimization evaluation"""
+    """Track and store performance metrics for summarization runs"""
     
-    def __init__(self):
-        self.metrics: List[Dict] = []
+    def __init__(self, metrics_file="metrics.json"):
+        """
+        Initialize the performance tracker
+        
+        Args:
+            metrics_file: Path to JSON file for storing metrics
+        """
+        self.metrics_file = metrics_file
+        self.metrics = []
+        self.load_metrics()
     
-    def track_summary(self, repo_name: str, model: str, response, latency_ms: float, input_tokens: int, output_tokens: int) -> Dict:
-        """Track a single summary generation"""
+    def load_metrics(self):
+        """Load existing metrics from file if it exists"""
+        if os.path.exists(self.metrics_file):
+            try:
+                with open(self.metrics_file, 'r') as f:
+                    self.metrics = json.load(f)
+            except (json.JSONDecodeError, IOError):
+                self.metrics = []
+        else:
+            self.metrics = []
+    
+    def save_metrics(self):
+        """Save metrics to JSON file"""
+        try:
+            with open(self.metrics_file, 'w') as f:
+                json.dump(self.metrics, f, indent=2)
+        except IOError as e:
+            print(f"Warning: Could not save metrics to {self.metrics_file}: {e}")
+    
+    def track_summary(self, repo_name, model, response, latency_ms, input_tokens, output_tokens):
+        """
+        Track a summarization run
+        
+        Args:
+            repo_name: Name of the repository
+            model: Model used for summarization
+            response: The generated summary text
+            latency_ms: Latency in milliseconds
+            input_tokens: Number of input tokens used
+            output_tokens: Number of output tokens used
+        
+        Returns:
+            dict: Metric record with all tracking information
+        """
+        # Calculate cost (Haiku pricing: $0.80/1M input tokens, $2.40/1M output tokens)
+        input_cost = (input_tokens * 0.80) / 1_000_000
+        output_cost = (output_tokens * 2.40) / 1_000_000
+        total_cost = input_cost + output_cost
+        
+        # Calculate tokens per second
+        tokens_per_second = (input_tokens + output_tokens) / (latency_ms / 1000) if latency_ms > 0 else 0
+        
+        # Create metric record
         metric = {
-            "timestamp": datetime.now().isoformat(),
-            "repo_name": repo_name,
-            "model": model,
-            
-            # Latency Metrics
-            "latency_ms": latency_ms,
-            
-            # Token & Cost Metrics
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "total_tokens": input_tokens + output_tokens,
-            "estimated_cost_usd": self._calculate_cost(model, input_tokens, output_tokens),
-            
-            # Quality Metrics
-            "answer_completeness": self._score_completeness(response),
-            "has_all_four_questions": "Q1:" in response and "Q2:" in response and "Q3:" in response and "Q4:" in response,
+            'timestamp': datetime.now().isoformat(),
+            'repo_name': repo_name,
+            'model': model,
+            'latency_ms': latency_ms,
+            'input_tokens': input_tokens,
+            'output_tokens': output_tokens,
+            'total_tokens': input_tokens + output_tokens,
+            'cost_usd': round(total_cost, 6),
+            'tokens_per_second': round(tokens_per_second, 2),
+            'response_length': len(response) if response else 0,
         }
+        
+        # Add to metrics list and save
         self.metrics.append(metric)
+        self.save_metrics()
+        
         return metric
     
-    def _calculate_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
-        """Calculate estimated cost based on model pricing"""
-        pricing = {
-            "claude-haiku-4-5": {"input": 0.80, "output": 2.40},
-            "claude-sonnet-4-20250514": {"input": 3.00, "output": 15.00},
-            "claude-opus-4-1-20250805": {"input": 15.00, "output": 75.00},
-        }
-        
-        if model not in pricing:
-            model = "claude-haiku-4-5"
-        
-        rates = pricing[model]
-        cost = (input_tokens * rates["input"] + output_tokens * rates["output"]) / 1_000_000
-        return round(cost, 6)
+    def get_metrics(self):
+        """Get all tracked metrics"""
+        return self.metrics
     
-    def _score_completeness(self, response: str) -> float:
-        """Score 0-1 based on how many questions are answered"""
-        questions_answered = 0
-        for i in range(1, 5):
-            if f"Q{i}:" in response:
-                questions_answered += 1
-        return questions_answered / 4
-    
-    def get_optimization_report(self) -> Dict:
-        """Generate comprehensive optimization report"""
+    def get_summary_stats(self):
+        """Get summary statistics of all tracked runs"""
         if not self.metrics:
-            return {"error": "No metrics collected yet"}
+            return None
         
-        total_tests = len(self.metrics)
+        total_runs = len(self.metrics)
+        total_tokens = sum(m.get('total_tokens', 0) for m in self.metrics)
+        total_cost = sum(m.get('cost_usd', 0) for m in self.metrics)
+        avg_latency = sum(m.get('latency_ms', 0) for m in self.metrics) / total_runs if total_runs > 0 else 0
+        total_latency = sum(m.get('latency_ms', 0) for m in self.metrics)
         
-        # Aggregate metrics by model
-        model_stats = {}
-        for metric in self.metrics:
-            model = metric["model"]
-            if model not in model_stats:
-                model_stats[model] = {
-                    "count": 0,
-                    "total_tokens": 0,
-                    "total_cost": 0.0,
-                    "total_latency": 0.0,
-                    "avg_completeness": 0.0,
-                    "complete_answers": 0,
-                }
-            
-            ms = model_stats[model]
-            ms["count"] += 1
-            ms["total_tokens"] += metric["total_tokens"]
-            ms["total_cost"] += metric["estimated_cost_usd"]
-            ms["total_latency"] += metric["latency_ms"]
-            ms["avg_completeness"] += metric["answer_completeness"]
-            if metric["has_all_four_questions"]:
-                ms["complete_answers"] += 1
-        
-        # Calculate averages
-        for model in model_stats:
-            ms = model_stats[model]
-            ms["avg_tokens"] = ms["total_tokens"] / ms["count"]
-            ms["avg_cost"] = ms["total_cost"] / ms["count"]
-            ms["avg_latency_ms"] = ms["total_latency"] / ms["count"]
-            ms["avg_completeness"] = ms["avg_completeness"] / ms["count"]
-            ms["completeness_rate"] = ms["complete_answers"] / ms["count"]
-        
-        report = {
-            "summary": {
-                "total_tests": total_tests,
-                "timestamp": datetime.now().isoformat(),
-                "models_tested": list(model_stats.keys()),
-            },
-            "by_model": model_stats,
-            "recommendations": self._generate_recommendations(model_stats),
+        return {
+            'total_runs': total_runs,
+            'total_tokens': total_tokens,
+            'total_cost_usd': round(total_cost, 6),
+            'avg_latency_ms': round(avg_latency, 2),
+            'total_latency_ms': round(total_latency, 2),
+            'unique_repos': len(set(m.get('repo_name', '') for m in self.metrics)),
+            'unique_models': list(set(m.get('model', '') for m in self.metrics if m.get('model'))),
         }
-        
-        return report
-    
-    def _generate_recommendations(self, model_stats: Dict) -> List[str]:
-        """Generate optimization recommendations based on metrics"""
-        recommendations = []
-        
-        for model, stats in model_stats.items():
-            avg_tokens = stats["avg_tokens"]
-            avg_cost = stats["avg_cost"]
-            completeness = stats["completeness_rate"]
-            
-            if avg_tokens > 1500:
-                recommendations.append(f"⚠️ {model}: HIGH TOKEN COUNT ({avg_tokens:.0f}). Consider further content filtering.")
-            
-            if avg_cost > 0.010:
-                recommendations.append(f"💰 {model}: HIGH COST (${avg_cost:.6f}). Switch to smaller model or batch process.")
-            
-            if completeness < 0.9:
-                recommendations.append(f"❌ {model}: INCOMPLETE ANSWERS ({completeness*100:.0f}%). Refine prompt format.")
-            
-            if avg_tokens < 500 and completeness > 0.95:
-                recommendations.append(f"✅ {model}: OPTIMAL ({avg_tokens:.0f} tokens, {completeness*100:.0f}% complete). Keep this configuration.")
-        
-        if not recommendations:
-            recommendations.append("✅ All models performing well. Monitor for any degradation.")
-        
-        return recommendations
-    
-    def compare_versions(self, before_metrics: List[Dict], after_metrics: List[Dict]) -> Dict:
-        """Compare metrics before and after optimization"""
-        
-        def avg_metric(metrics: List[Dict], key: str) -> float:
-            if not metrics:
-                return 0
-            return sum(m.get(key, 0) for m in metrics) / len(metrics)
-        
-        comparison = {
-            "before": {
-                "avg_tokens": avg_metric(before_metrics, "total_tokens"),
-                "avg_cost_usd": avg_metric(before_metrics, "estimated_cost_usd"),
-                "avg_latency_ms": avg_metric(before_metrics, "latency_ms"),
-                "avg_completeness": avg_metric(before_metrics, "answer_completeness"),
-            },
-            "after": {
-                "avg_tokens": avg_metric(after_metrics, "total_tokens"),
-                "avg_cost_usd": avg_metric(after_metrics, "estimated_cost_usd"),
-                "avg_latency_ms": avg_metric(after_metrics, "latency_ms"),
-                "avg_completeness": avg_metric(after_metrics, "answer_completeness"),
-            },
-            "improvements": {}
-        }
-        
-        # Calculate improvements
-        if comparison["before"]["avg_tokens"] > 0:
-            token_reduction = (1 - comparison["after"]["avg_tokens"] / comparison["before"]["avg_tokens"]) * 100
-            comparison["improvements"]["token_reduction_percent"] = round(token_reduction, 1)
-        
-        if comparison["before"]["avg_cost_usd"] > 0:
-            cost_reduction = (1 - comparison["after"]["avg_cost_usd"] / comparison["before"]["avg_cost_usd"]) * 100
-            comparison["improvements"]["cost_reduction_percent"] = round(cost_reduction, 1)
-        
-        if comparison["before"]["avg_latency_ms"] > 0:
-            latency_change = ((comparison["after"]["avg_latency_ms"] / comparison["before"]["avg_latency_ms"]) - 1) * 100
-            comparison["improvements"]["latency_change_percent"] = round(latency_change, 1)
-        
-        completeness_change = comparison["after"]["avg_completeness"] - comparison["before"]["avg_completeness"]
-        comparison["improvements"]["completeness_change"] = round(completeness_change, 3)
-        
-        return comparison
-    
-    def save_report(self, filename: str = "optimization_report.json"):
-        """Save metrics to file"""
-        report = self.get_optimization_report()
-        with open(filename, 'w') as f:
-            json.dump(report, f, indent=2)
-        print(f"Report saved to {filename}")
-    
-    def print_summary(self):
-        """Print metrics summary to console"""
-        if not self.metrics:
-            print("No metrics collected yet")
-            return
-        
-        report = self.get_optimization_report()
-        
-        print("\n" + "="*60)
-        print("PERFORMANCE OPTIMIZATION REPORT")
-        print("="*60)
-        print(f"\nTotal Tests: {report['summary']['total_tests']}")
-        print(f"Models Tested: {', '.join(report['summary']['models_tested'])}")
-        
-        print("\n📊 METRICS BY MODEL:")
-        print("-"*60)
-        
-        for model, stats in report['by_model'].items():
-            print(f"\n{model}:")
-            print(f"  Avg Tokens: {stats['avg_tokens']:.0f}")
-            print(f"  Avg Cost: ${stats['avg_cost']:.6f}")
-            print(f"  Avg Latency: {stats['avg_latency_ms']:.0f}ms")
-            print(f"  Completeness: {stats['avg_completeness']:.2%}")
-            print(f"  Complete Answers: {stats['complete_answers']}/{stats['count']}")
-        
-        print("\n💡 RECOMMENDATIONS:")
-        print("-"*60)
-        for rec in report['recommendations']:
-            print(f"  {rec}")
-        print("\n" + "="*60 + "\n")

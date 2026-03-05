@@ -1,20 +1,14 @@
 #!/usr/bin/env python3
 """
 Simple CLI for testing GitHub repository summaries
-Shows: execution time, token counts, cost, and quality metrics
-
-Usage:
-    python run_summarizer.py https://github.com/owner/repo
-    python run_summarizer.py https://github.com/pallets/flask
+Strategy: Use intelligent repo analysis with token budget optimization
 """
 
 import sys
 import time
-import json
 from datetime import datetime
 from github_client import GitHubClient
 from llm_client import LLMClient
-from performance_tracker import PerformanceTracker
 
 def print_header(text):
     """Print formatted header"""
@@ -24,182 +18,98 @@ def print_header(text):
 
 def print_section(title):
     """Print formatted section"""
-    print(f"\n📊 {title}")
+    print(f"\n{title}")
     print("-" * 70)
 
-def estimate_tokens(text):
-    """Rough token estimate: ~4 chars per token"""
-    if text is None:
-        return 0
-    # If it's already a number (char count), use it directly
-    if isinstance(text, int):
-        return text // 4
-    # Otherwise treat as string and count chars
-    text_str = str(text) if not isinstance(text, str) else text
-    return len(text_str) // 4
-
 def run_summary(repo_url):
-    """Run summarization with timing and metrics"""
+    """Run optimized summarization with smart token budget management"""
     
-    print_header("🚀 GITHUB REPOSITORY SUMMARIZER")
-    print(f"\nRepository: {repo_url}\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    print_header("GITHUB REPOSITORY SUMMARIZER (OPTIMIZED)")
+    print(f"\nRepository: {repo_url}")
+    print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
     
     gh_client = GitHubClient()
     llm_client = LLMClient()
-    tracker = PerformanceTracker()
     
     try:
-        # Step 1: Fetch repository data
-        print_section("STEP 1: Fetching Repository Data")
+        # Parse URL
+        owner, repo = gh_client.parse_url(repo_url)
+        print(f"Analyzing: {owner}/{repo}")
+        
+        # Step 1: Run all 4 phases of intelligent extraction
         start_fetch = time.time()
+        print("\n[Phase 1] Fetching initial context and manifests...")
         
         repo_data = gh_client.get_repo_data(repo_url)
-        
         fetch_time = time.time() - start_fetch
         
-        # Safely get values with type checking
-        structure = repo_data.get('structure', '')
+        # Extract metrics
         readme = repo_data.get('readme', '')
+        structure = repo_data.get('structure', '')
         code_files = repo_data.get('code_files', [])
+        metadata = repo_data.get('_metadata', {})
         
-        # Ensure they're the right types
-        if structure is None:
-            structure = ''
-        if readme is None:
-            readme = ''
-        if code_files is None:
-            code_files = []
+        readme_size = len(readme) if readme else 0
+        code_files_count = len(code_files)
         
-        structure_size = len(str(structure)) if structure else 0
-        readme_size = len(str(readme)) if readme else 0
+        print(f"  ✓ README size: {readme_size} chars")
+        print(f"  ✓ Code files sampled: {code_files_count}")
+        print(f"  ✓ Tech stack identified: {', '.join(metadata.get('tech_stack', {}).get('languages', []))}")
         
-        # Calculate total characters for fetch
-        code_files_size = sum(len(str(f.get('content', '')) if isinstance(f, dict) else '') for f in code_files)
-        fetch_total_chars = structure_size + readme_size + code_files_size
-        fetch_tokens = estimate_tokens(fetch_total_chars)
-        
-        print(f"✓ Fetch completed in {fetch_time:.2f}s")
-        print(f"  - Structure: {len(str(structure).split(chr(10)))} lines, {structure_size} chars")
-        print(f"  - README: {readme_size} characters")
-        print(f"  - Code files found: {len(code_files)}")
-        for i, f in enumerate(code_files, 1):
-            file_path = f.get('path', 'unknown') if isinstance(f, dict) else str(f)
-            file_content = f.get('content', '') if isinstance(f, dict) else ''
-            file_size = len(str(file_content)) if file_content else 0
-            print(f"    {i}. {file_path:<40} ({file_size} chars)")
-        print(f"  - Estimated tokens (fetch): ~{fetch_tokens}")
-        
-        # Step 2: Generate summary
-        print_section("STEP 2: Generating Summary")
+        # Step 2: Generate summary with agentic feedback
+        print("\n[Phase 2] Generating summary with Claude Haiku...")
         start_summary = time.time()
         
-        summary = llm_client.summarize(repo_data)
-        
+        summary = llm_client.summarize(repo_data, gh_client=gh_client)
         summary_time = time.time() - start_summary
         
-        # Estimate tokens with proper type handling
-        summary_str = str(summary) if summary else ""
-        
-        # Recalculate input tokens (same as fetch)
-        structure = repo_data.get('structure', '') or ''
-        readme = repo_data.get('readme', '') or ''
-        code_files_list = repo_data.get('code_files', []) or []
-        
-        structure_chars = len(str(structure))
-        readme_chars = len(str(readme))
-        code_chars = sum(len(str(f.get('content', '') if isinstance(f, dict) else '')) for f in code_files_list)
-        input_chars = structure_chars + readme_chars + code_chars
-        
-        output_chars = len(summary_str)
-        
-        input_tokens = estimate_tokens(input_chars)
-        output_tokens = estimate_tokens(output_chars)
-        total_tokens = input_tokens + output_tokens
-        
-        print(f"✓ Summary generated in {summary_time:.2f}s")
-        print(f"  - Estimated input tokens: ~{input_tokens}")
-        print(f"  - Estimated output tokens: ~{output_tokens}")
-        print(f"  - Total estimated tokens: ~{total_tokens}")
-        
-        # Calculate cost (Haiku pricing)
-        estimated_cost = (input_tokens * 0.80 + output_tokens * 2.40) / 1_000_000
-        print(f"  - Estimated cost: ${estimated_cost:.6f}")
-        
-        # Step 3: Display summary
-        print_section("STEP 3: Generated Summary")
+        # Step 3: Display results
+        print_section("FINAL SUMMARY")
         print(summary)
         
-        # Step 4: Performance metrics
-        print_section("STEP 4: Performance Metrics")
+        # Step 4: Display metrics
+        print_section("PERFORMANCE METRICS")
         
         total_time = fetch_time + summary_time
+        summary_str = str(summary) if summary else ""
         
-        print(f"⏱️  Execution Timeline:")
-        print(f"  - Fetch time: {fetch_time:.3f}s ({fetch_time/total_time*100:.1f}%)")
-        print(f"  - Summary time: {summary_time:.3f}s ({summary_time/total_time*100:.1f}%)")
-        print(f"  - Total time: {total_time:.3f}s")
+        input_chars = readme_size + len(structure)
+        output_chars = len(summary_str)
         
-        print(f"\n📈 Token Summary:")
-        print(f"  - Input tokens: ~{input_tokens}")
-        print(f"  - Output tokens: ~{output_tokens}")
-        print(f"  - Total tokens: ~{total_tokens}")
-        print(f"  - Cost: ${estimated_cost:.6f}")
+        input_tokens = gh_client.estimate_tokens(input_chars)
+        output_tokens = gh_client.estimate_tokens(output_chars)
+        total_tokens = input_tokens + output_tokens
         
-        # Quality check
-        quality_score = 0
-        required_sections = ['Q1:', 'Q2:', 'Q3:', 'Q4:']
-        for section in required_sections:
-            if section in summary:
-                quality_score += 0.25
+        # Get actual token usage from LLM
+        actual_usage = llm_client.get_token_usage()
         
-        print(f"\n✓ Quality Metrics:")
-        print(f"  - Completeness: {quality_score:.0%} ({int(quality_score*4)}/4 sections)")
-        print(f"  - All answers present: {'Yes ✅' if quality_score == 1.0 else 'No ⚠️'}")
+        # Calculate cost (Haiku pricing: $0.80 per 1M input, $2.40 per 1M output)
+        estimated_cost = (actual_usage.get("input_tokens", input_tokens) * 0.80 + 
+                         actual_usage.get("output_tokens", output_tokens) * 2.40) / 1_000_000
         
-        # Step 5: Save to tracker
-        print_section("STEP 5: Saving Metrics")
-        from llm_client import select_model
-        model = select_model(repo_data)
+        print(f"Total Time: {total_time:.3f}s (fetch: {fetch_time:.3f}s, LLM: {summary_time:.3f}s)")
+        print(f"Input Tokens (estimated): {actual_usage.get('input_tokens', input_tokens)}")
+        print(f"Output Tokens: {actual_usage.get('output_tokens', output_tokens)}")
+        print(f"Total Tokens: {total_tokens}")
+        print(f"Estimated Cost: ${estimated_cost:.6f}")
+        print(f"Timestamp: {datetime.now().isoformat()}")
         
-        metric = tracker.track_summary(
-            repo_name=repo_url.split('/')[-1],
-            model=model,
-            response=summary,
-            latency_ms=summary_time * 1000,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens
-        )
-        
-        print(f"✓ Metrics saved to tracker")
-        print(f"  - Model selected: {model}")
-        print(f"  - Repository: {metric['repo_name']}")
-        
-        # Final summary
-        print_section("FINAL SUMMARY")
-        print(f"Total Execution Time:    {total_time:.3f} seconds")
-        print(f"Total Tokens Used:       {total_tokens} tokens")
-        print(f"Estimated Cost:          ${estimated_cost:.6f}")
-        print(f"Quality Score:           {quality_score:.0%}")
-        print(f"Selected Model:          {model}")
-        print(f"Timestamp:               {datetime.now().isoformat()}")
-        
-        print("\n✅ SUCCESS - Summary generated and metrics tracked")
+        print("\n✓ SUCCESS - Summary generated with intelligent optimization")
         print("="*70 + "\n")
         
         return True
         
     except ValueError as e:
-        print(f"\n❌ ERROR: Invalid GitHub URL")
-        print(f"   Error: {str(e)}")
-        print(f"\n   Expected format: https://github.com/owner/repo")
+        print(f"\n✗ ERROR: Invalid GitHub URL")
+        print(f"  {str(e)}")
+        print(f"  Expected: https://github.com/owner/repo")
         return False
     except Exception as e:
-        print(f"\n❌ ERROR: {str(e)}")
-        print(f"\n   Check:")
-        print(f"   - GitHub URL is valid and public")
-        print(f"   - ANTHROPIC_API_KEY is set in .env")
-        print(f"   - GITHUB_TOKEN is set in .env (optional)")
-        print(f"   - Internet connection is working")
+        print(f"\n✗ ERROR: {str(e)}")
+        print(f"\nCheck:")
+        print(f"  - GitHub URL is valid and public")
+        print(f"  - ANTHROPIC_API_KEY is set in .env")
+        print(f"  - Internet connection is working")
         return False
 
 def print_usage():
@@ -211,17 +121,17 @@ Examples:
     python run_summarizer.py https://github.com/tornadoweb/tornado
     python run_summarizer.py https://github.com/psf/requests
 
-The script will:
-  1. Fetch repository data from GitHub
-  2. Generate AI summary
-  3. Show timing and token metrics
-  4. Display quality scores
+The script will intelligently:
+  1. Fetch README and repository structure
+  2. Identify manifest files (package.json, requirements.txt, etc.)
+  3. Scan for entry points and tech stack
+  4. Sample important code files (full or signatures only)
+  5. Fetch test context to understand expected behavior
+  6. Ask LLM if additional files are needed (agentic feedback)
+  7. Generate comprehensive summary
 
-Output includes:
-  - ⏱️  Execution time breakdown
-  - 📈 Token usage and cost
-  - ✓ Quality metrics
-  - 📊 Model selection info
+Output includes execution time, token usage, and estimated cost.
+Smart optimization ensures minimal token usage (~1000 input tokens).
 """)
 
 if __name__ == "__main__":
@@ -233,8 +143,8 @@ if __name__ == "__main__":
     
     # Validate URL format
     if not repo_url.startswith("https://github.com/"):
-        print(f"\n❌ Invalid URL: {repo_url}")
-        print(f"   Expected: https://github.com/owner/repo")
+        print(f"\n✗ ERROR: Invalid URL: {repo_url}")
+        print(f"  Expected: https://github.com/owner/repo")
         print_usage()
         sys.exit(1)
     

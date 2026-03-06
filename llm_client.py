@@ -29,47 +29,82 @@ class LLMClient:
 
     def summarize(self, repo_data, gh_client=None):
         """Generator that streams summary text chunks in real-time"""
-        # Support for Mock mode to save API costs during testing
         if not self.api_key or self.api_key == "mock":
-            yield "# Project Summary (Mock)\n"
-            yield "This is a mock summary. Set a real API key in .env to get actual Claude analysis."
+            yield json.dumps({
+                "summary": "Mock summary - Set a real API key in .env to get actual Claude analysis.",
+                "technologies": [],
+                "structure": "Mock mode enabled"
+            })
             return
 
-        # PHASE 1: Build the initial prompt and estimate input tokens
         prompt, prompt_tokens = self._build_prompt(repo_data)
         self.token_usage["input_tokens"] += prompt_tokens
         
-        # Yield header immediately for better UX (TTFT - Time To First Token)
-        yield "# Project Summary\n"
-        
-        streamed_summary = ""
+        streamed_response = ""
         
         try:
-            # PHASE 2-3: Stream first call to Claude for initial analysis
             with self.client.messages.stream(
-                model="claude-haiku-4-5",
+                model="claude-haiku-4-5-20251001",
                 max_tokens=1500,
                 temperature=0.2,
                 messages=[{"role": "user", "content": prompt}]
             ) as stream:
-                # Yield text chunks as they arrive
                 for text in stream.text_stream:
-                    streamed_summary += text
-                    yield text
+                    streamed_response += text
                 
-                # Capture usage stats after stream completes
                 final_message = stream.get_final_message()
                 if hasattr(final_message, 'usage'):
                     self.token_usage["output_tokens"] += final_message.usage.output_tokens
             
-            # PHASE 4: Agentic Loop - If summary is incomplete, fetch more files and refine
-            if gh_client and not self._is_summary_complete(streamed_summary):
-                yield "\n\n"
-                refined = self._run_deep_dive_loop(gh_client, repo_data, streamed_summary)
-                yield refined
+            parsed_summary = self._parse_json_response(streamed_response)
+            yield json.dumps(parsed_summary)
+            
+            if gh_client and not self._is_summary_complete(parsed_summary):
+                refined = self._run_deep_dive_loop(gh_client, repo_data, parsed_summary)
+                yield json.dumps(refined)
             
         except Exception as e:
-            yield f"\n\nClaude Analysis Failed: {str(e)}"
+            yield json.dumps({
+                "summary": f"Claude Analysis Failed: {str(e)}",
+                "technologies": [],
+                "structure": "Error occurred"
+            })
+
+    def _parse_json_response(self, response_text):
+        """Parse JSON response from Claude with error handling"""
+        try:
+            # Try to extract JSON from the response
+            json_str = response_text.strip()
+            
+            # If response is wrapped in markdown code blocks, extract it
+            if json_str.startswith("```json"):
+                json_str = json_str[7:]
+            if json_str.startswith("```"):
+                json_str = json_str[3:]
+            if json_str.endswith("```"):
+                json_str = json_str[:-3]
+            
+            json_str = json_str.strip()
+            parsed = json.loads(json_str)
+            
+            # Validate required fields
+            if not isinstance(parsed, dict):
+                raise ValueError("Response is not a JSON object")
+            
+            # Ensure required fields exist
+            required_fields = {"summary", "technologies", "structure"}
+            missing_fields = required_fields - set(parsed.keys())
+            if missing_fields:
+                raise ValueError(f"Missing required fields: {missing_fields}")
+            
+            return parsed
+            
+        except json.JSONDecodeError as e:
+            return {
+                "summary": "Failed to parse Claude response as JSON",
+                "technologies": [],
+                "structure": f"Parse error: {str(e)}"
+            }
 
     def _run_deep_dive_loop(self, gh_client, repo_data, initial_summary):
         """Agentic Phase: Automatically identifies, fetches, and integrates missing technical details"""
@@ -81,12 +116,12 @@ class LLMClient:
             {repo_data.get('structure', '')[:1000]}
 
             Current Summary:
-            {initial_summary[:500]}...
+            {initial_summary.get('summary', '')[:500]}...
 
             Respond ONLY with the full file paths, one per line. If no more files are needed, write 'SUFFICIENT'."""
 
             message = self.client.messages.create(
-                model="claude-haiku-4-5",
+                model="claude-haiku-4-5-20251001",
                 max_tokens=100,
                 messages=[{"role": "user", "content": query_prompt}]
             )
@@ -127,18 +162,20 @@ class LLMClient:
                 return initial_summary
 
             # Second LLM call to integrate the new information into the final summary
-            refine_prompt = f"""Refine the following summary using the additional file content provided.
+            refine_prompt = f"""Refine the following summary using the additional file content provided. Output ONLY a valid JSON object with these exact fields:
+            
+            {{"summary": "high-level overview", "technologies": ["list", "of", "techs"], "structure": "directory explanation"}}
             
             Initial Summary:
-            {initial_summary}
+            {json.dumps(initial_summary)}
 
             New Deep-Dive Content:
             {additional_context}
             
-            Provide a more detailed and accurate 5-question analysis based on this new data."""
+            Provide a more detailed and accurate analysis based on this new data. Return ONLY the JSON object, no other text."""
             
             final_message = self.client.messages.create(
-                model="claude-haiku-4-5",
+                model="claude-haiku-4-5-20251001",
                 max_tokens=1500,
                 messages=[{"role": "user", "content": refine_prompt}]
             )
@@ -148,7 +185,8 @@ class LLMClient:
                 self.token_usage["input_tokens"] += self.estimate_tokens(refine_prompt)
                 self.token_usage["output_tokens"] += final_message.usage.output_tokens
 
-            return final_message.content[0].text
+            refined_text = final_message.content[0].text
+            return self._parse_json_response(refined_text)
 
         except Exception:
             # If the deep-dive fails, fallback to the initial summary
@@ -166,33 +204,37 @@ class LLMClient:
             for file in repo_data["code_files"][:3]:
                 code_samples += f"\nFile: {file['path']}\n{file['content']}\n"
         
-        prompt = f"""Analyze this GitHub repository as an expert.
-        
-        README Content:
-        {repo_data.get('readme', 'No README available')}
-        
-        Structure:
-        {repo_data.get('structure', '')[:1000]}
-        
-        Tech Stack:
-        {tech_info}
-        
-        Code Samples:
-        {code_samples}
-        
-        Answer these 5 questions comprehensively:
-        1. WHO SHOULD USE THIS
-        2. WHY AND PURPOSE
-        3. INPUT AND OUTPUT
-        4. LANGUAGE AND TECH
-        5. KEY FEATURES AND CAPABILITIES"""
+        prompt = f"""Analyze this GitHub repository and respond with ONLY a valid JSON object. Do not include any conversational filler, markdown formatting, or explanatory text.
+
+        Repository Data:
+        README Content: {repo_data.get('readme', 'No README available')}
+        Structure: {repo_data.get('structure', '')[:1000]}
+        Tech Stack: {tech_info}
+        Code Samples: {code_samples}
+
+        Return a JSON object with exactly these fields (no other text):
+        {{
+          "summary": "A high-level overview of the project's purpose and what it does",
+          "technologies": ["list", "of", "languages", "frameworks", "and", "libraries"],
+          "structure": "A concise explanation of the directory layout and key files"
+        }}"""
 
         return prompt, self.estimate_tokens(prompt) + 150
 
-    def _is_summary_complete(self, summary):
-        """Verify if all required sections are present in the response"""
-        markers = ['WHO SHOULD', 'WHY AND', 'INPUT AND', 'LANGUAGE AND', 'KEY FEATURES']
-        return sum(1 for m in markers if m in summary.upper()) >= 4
+    def _is_summary_complete(self, summary_dict):
+        """Verify if summary dictionary has all required fields with content"""
+        if not isinstance(summary_dict, dict):
+            return False
+        
+        required_fields = {"summary", "technologies", "structure"}
+        has_fields = required_fields.issubset(set(summary_dict.keys()))
+        
+        has_content = (
+            summary_dict.get("summary") and len(str(summary_dict.get("summary", ""))) > 10 and
+            summary_dict.get("structure") and len(str(summary_dict.get("structure", ""))) > 10
+        )
+        
+        return has_fields and has_content
 
     def get_token_usage(self):
         """Return the accumulated token usage for cost calculation"""

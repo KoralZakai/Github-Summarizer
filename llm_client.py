@@ -2,6 +2,7 @@ import os
 import json
 import requests
 import base64
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
@@ -27,36 +28,48 @@ class LLMClient:
         return int(len(str(text).split()) * 1.3)
 
     def summarize(self, repo_data, gh_client=None):
-        """Main entry point for summarization with Mock support and Agentic Loop"""
+        """Generator that streams summary text chunks in real-time"""
         # Support for Mock mode to save API costs during testing
         if not self.api_key or self.api_key == "mock":
-            return "# Project Summary (Mock)\nThis is a mock summary. Set a real API key in .env to get actual Claude analysis."
+            yield "# Project Summary (Mock)\n"
+            yield "This is a mock summary. Set a real API key in .env to get actual Claude analysis."
+            return
 
         # PHASE 1: Build the initial prompt and estimate input tokens
         prompt, prompt_tokens = self._build_prompt(repo_data)
         self.token_usage["input_tokens"] += prompt_tokens
         
+        # Yield header immediately for better UX (TTFT - Time To First Token)
+        yield "# Project Summary\n"
+        
+        streamed_summary = ""
+        
         try:
-            # PHASE 2-3: First call to Claude for initial analysis
-            message = self.client.messages.create(
+            # PHASE 2-3: Stream first call to Claude for initial analysis
+            with self.client.messages.stream(
                 model="claude-haiku-4-5",
                 max_tokens=1500,
                 temperature=0.2,
                 messages=[{"role": "user", "content": prompt}]
-            )
-            
-            summary = message.content[0].text
-            if hasattr(message, 'usage'):
-                self.token_usage["output_tokens"] += message.usage.output_tokens
+            ) as stream:
+                # Yield text chunks as they arrive
+                for text in stream.text_stream:
+                    streamed_summary += text
+                    yield text
+                
+                # Capture usage stats after stream completes
+                final_message = stream.get_final_message()
+                if hasattr(final_message, 'usage'):
+                    self.token_usage["output_tokens"] += final_message.usage.output_tokens
             
             # PHASE 4: Agentic Loop - If summary is incomplete, fetch more files and refine
-            if gh_client and not self._is_summary_complete(summary):
-                summary = self._run_deep_dive_loop(gh_client, repo_data, summary)
-            
-            return f"# Project Summary\n{summary}"
+            if gh_client and not self._is_summary_complete(streamed_summary):
+                yield "\n\n"
+                refined = self._run_deep_dive_loop(gh_client, repo_data, streamed_summary)
+                yield refined
             
         except Exception as e:
-            return f"Claude Analysis Failed: {str(e)}"
+            yield f"\n\nClaude Analysis Failed: {str(e)}"
 
     def _run_deep_dive_loop(self, gh_client, repo_data, initial_summary):
         """Agentic Phase: Automatically identifies, fetches, and integrates missing technical details"""
@@ -85,15 +98,30 @@ class LLMClient:
             requested_paths = [line.strip() for line in response.split('\n') if line.strip()]
             additional_context = ""
             
-            # Actually fetch the contents of the requested files from GitHub
-            for path in requested_paths:
+            # Concurrent file fetching: Fetch all requested files in parallel using ThreadPoolExecutor
+            def fetch_file_content(path):
+                """Helper function to fetch a single file from GitHub API"""
                 file_obj = next((f for f in repo_data.get('tree_data', []) if f.get('path') == path), None)
                 if file_obj and "url" in file_obj:
-                    res = requests.get(file_obj["url"], headers=gh_client.headers, timeout=5)
-                    if res.status_code == 200:
-                        content = base64.b64decode(res.json().get("content", "")).decode("utf-8", errors="ignore")
-                        # Add file content (truncated to 2000 chars) to the context
-                        additional_context += f"\n--- Deep-Dive File: {path} ---\n{content[:2000]}\n"
+                    try:
+                        res = requests.get(file_obj["url"], headers=gh_client.headers, timeout=5)
+                        if res.status_code == 200:
+                            content = base64.b64decode(res.json().get("content", "")).decode("utf-8", errors="ignore")
+                            return path, content[:2000]
+                    except Exception:
+                        pass
+                return None
+            
+            # Use ThreadPoolExecutor to fetch all files concurrently (max 5 workers)
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                future_to_path = {executor.submit(fetch_file_content, path): path for path in requested_paths}
+                
+                # Collect results as they complete (not necessarily in order)
+                for future in as_completed(future_to_path):
+                    result = future.result()
+                    if result:
+                        path, content = result
+                        additional_context += f"\n--- Deep-Dive File: {path} ---\n{content}\n"
 
             if not additional_context:
                 return initial_summary

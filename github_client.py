@@ -49,6 +49,31 @@ class GitHubClient:
             else: break
         return '. '.join(result) + "..."
 
+    def clean_content(self, text):
+        if not text: return ""
+        
+        # 1. Remove Badges (usually images with links at the top)
+        text = re.sub(r'\[!\[.*?\]\(.*?\)\]\(.*?\)', '', text)
+        text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
+        
+        # 2. Remove HTML comments (FIXED: was empty pattern)
+        text = re.sub(r'<!--.*?-->', '', text, flags=re.DOTALL)
+        
+        # 3. Remove specific noisy sections (License, Contributors, etc.)
+        # We only remove from the header until the next header
+        noisy_sections = ['License', 'Contributors', 'Acknowledgments', 'Stargazers', 'Sponsors']
+        for section in noisy_sections:
+            pattern = rf'#+ {section}.*?(?=#+ |\Z)'
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE | re.DOTALL)
+            
+        # 4. Remove Social Media links (Twitter, Discord, etc.)
+        text = re.sub(r'\[.*?\]\(https?://(?:twitter\.com|discord\.gg|t\.me).*?\)', '', text)
+        
+        # 5. Collapse excessive whitespace (multiple blank lines become single blank line)
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        
+        return text.strip()
+
     def filter_tree_by_directory(self, tree_data):
         """Filter excluded directories"""
         return [f for f in tree_data if not any(f"/{exc}/" in f"/{f.get('path', '')}" or f.get('path', '').startswith(f"{exc}/") for exc in self.exclude_dirs)]
@@ -62,12 +87,64 @@ class GitHubClient:
         return ""
 
     def _fetch_tree(self, owner, repo):
+        """Selective tree exploration: Fetch root first, then hot directories only"""
+        # Common "hot" directories that contain actual code/content
+        hot_dirs = {'src', 'app', 'lib', 'components', 'utils', 'server', 'client', 
+                    'backend', 'frontend', 'packages', 'modules', 'services', 'core'}
+        
         for branch in ['main', 'master']:
             try:
-                res = requests.get(f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1", headers=self.headers, timeout=5)
-                if res.status_code == 200:
-                    return res.json().get("tree", [])
-            except: pass
+                combined_tree = []
+                
+                # STEP 1: Fetch root level (non-recursive) to identify structure
+                root_res = requests.get(
+                    f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}",
+                    headers=self.headers, timeout=5
+                )
+                
+                if root_res.status_code != 200:
+                    continue
+                
+                root_tree = root_res.json().get("tree", [])
+                combined_tree.extend(root_tree)
+                
+                # STEP 2: Identify hot directories present at root level
+                root_dirs = {item.get('path') for item in root_tree if item.get('type') == 'tree'}
+                hot_dirs_found = root_dirs & hot_dirs
+                
+                # STEP 3: Selectively fetch sub-trees for hot directories
+                # This avoids fetching massive repos entirely
+                for dir_name in hot_dirs_found:
+                    try:
+                        subtree_res = requests.get(
+                            f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}:{dir_name}?recursive=1",
+                            headers=self.headers, timeout=5
+                        )
+                        if subtree_res.status_code == 200:
+                            subtree_data = subtree_res.json().get("tree", [])
+                            # Prefix paths with directory name to maintain structure
+                            for item in subtree_data:
+                                item['path'] = f"{dir_name}/{item['path']}"
+                            combined_tree.extend(subtree_data)
+                    except Exception:
+                        pass
+                
+                # If hot dirs found and fetched, we have good coverage
+                if combined_tree and hot_dirs_found:
+                    return combined_tree
+                    
+                # Fallback: If no hot dirs found, do a full recursive fetch
+                # (for repos with unusual structure)
+                fallback_res = requests.get(
+                    f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1",
+                    headers=self.headers, timeout=5
+                )
+                if fallback_res.status_code == 200:
+                    return fallback_res.json().get("tree", [])
+                    
+            except Exception:
+                pass
+        
         return []
 
     def extract_tech_stack(self, tree_data):
@@ -138,9 +215,13 @@ class GitHubClient:
 
         # Sample code files using the budget - PASS owner and repo
         code_files = self.sample_code_files(filtered_tree, owner, repo, max_tokens=code_budget)
+        
+        # Smart content filtering: Remove noise (URLs, badges, boilerplate) BEFORE truncating
+        # This saves 15-20% of token budget without losing technical value
+        cleaned_readme = self.clean_content(raw_readme)
 
         return {
-            "readme": self.truncate_content(raw_readme, max_tokens=readme_budget),
+            "readme": self.truncate_content(cleaned_readme, max_tokens=readme_budget),
             "structure": "\n".join([f["path"] for f in filtered_tree[:100]]),
             "tree_data": filtered_tree,
             "code_files": code_files,

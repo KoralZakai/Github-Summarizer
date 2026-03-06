@@ -86,13 +86,30 @@ async def summarize(request: SummarizeRequest):
         if not final_summary_json:
             raise HTTPException(status_code=500, detail="Failed to generate summary")
         
-        # 4. Parse final JSON response
+        # 4. Extract and validate JSON from response
+        # LLM should return pure JSON, but handle cases where it might have extra whitespace
+        final_summary_json = final_summary_json.strip()
+        
+        # Find JSON object boundaries in case of any extraneous text
+        json_start = final_summary_json.find('{')
+        json_end = final_summary_json.rfind('}') + 1
+        if json_start != -1 and json_end > json_start:
+            final_summary_json = final_summary_json[json_start:json_end]
+        
         parsed_summary = json.loads(final_summary_json)
         
-        # 5. Cache the result
+        # 5. Validate response contains required fields
+        required_fields = {"summary", "technologies", "structure"}
+        if not all(field in parsed_summary for field in required_fields):
+            raise HTTPException(
+                status_code=500, 
+                detail=f"LLM response missing required fields. Required: {required_fields}"
+            )
+        
+        # 6. Cache the result
         cache_summary(url, final_summary_json, {"fetched_at": str(datetime.now())})
         
-        # 6. Return structured response
+        # 7. Return structured response
         return SummarizeResponse(**parsed_summary)
         
     except HTTPException:
@@ -106,4 +123,4 @@ async def summarize(request: SummarizeRequest):
 
 # To run this server: 
 # uvicorn main:app --reload
-#then open url - http://127.0.0.1:8000/docs for interactive API docs
+# then open url - http://127.0.0.1:8000/docs for interactive API docs
